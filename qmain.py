@@ -1,5 +1,5 @@
 import streamlit as st
-import edge-tts
+import edge_tts
 # import asyncio
 # import os
 import json
@@ -171,4 +171,5 @@ if st.button("💾 保存当前进度"):
         st.error(f"无法获取当前播放时间: {e}")
 
     
+
 
