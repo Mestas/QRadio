@@ -9,9 +9,9 @@ from pathlib import Path
 from streamlit.components.v1 import html
 
 
-BOOK_DIR  = Path(r"D:\python_work\project\QRadio\Books")
-AUDIO_DIR = Path(r"D:\python_work\project\QRadio\Audio_files")
-PROC_DIR  = Path(r"D:\python_work\project\QRadio\Process_files")
+BOOK_DIR  = Path(r"Books")
+AUDIO_DIR = Path(r"Audio_files")
+PROC_DIR  = Path(r"Process_files")
 # -------------------- pyttsx3 工具 --------------------
 def get_voices():
     """获取本机所有可用语音"""
@@ -188,4 +188,5 @@ if st.button("💾 保存当前进度"):
         st.error(f"无法获取当前播放时间: {e}")
         print("[DEBUG] 转换错误:", e)
     # st.write(st.session_state)
+
     
