@@ -1,3 +1,4 @@
 streamlit>=1.51.0
 baidu-aip>=4.16.13
 pandas>=2.3.3
+chardet>=5.2.0
