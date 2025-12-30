@@ -2,11 +2,144 @@ import streamlit as st
 import os
 import json
 import base64
+import time
 from datetime import datetime
 from aip import AipSpeech
 import config
 import pandas as pd
 from urllib.parse import urlparse, parse_qs
+import hashlib
+import secrets
+from user_config import (
+    init_user_config, verify_user, update_user_password, 
+    get_user_info, update_last_login, load_user_config
+)
+
+# 初始化用户配置
+init_user_config()
+
+# 用户认证配置
+def is_user_logged_in():
+    """检查用户是否已登录"""
+    return st.session_state.get('logged_in', False)
+
+def show_login_page():
+    """显示登录界面"""
+    st.set_page_config(
+        page_title="iRadio Player - 登录",
+        page_icon="🔐",
+        layout="centered"
+    )
+    
+    st.title("🔐 iRadio Player 登录")
+    st.markdown("---")
+    
+    col1, col2, col3 = st.columns([1, 2, 1])
+    
+    with col2:
+        st.markdown("### 用户登录")
+        
+        with st.form("login_form"):
+            username = st.text_input("用户名", placeholder="请输入用户名")
+            password = st.text_input("密码", type="password", placeholder="请输入密码")
+            submit_button = st.form_submit_button("登录", type="primary")
+            
+            if submit_button:
+                if verify_user(username, password):
+                    st.session_state.logged_in = True
+                    st.session_state.username = username
+                    update_last_login(username)
+                    st.success(f"✅ 登录成功！欢迎 {username}")
+                    time.sleep(1)  # 给用户时间看到成功消息
+                    st.rerun()
+                else:
+                    st.error("❌ 用户名或密码错误！")
+        
+        # st.markdown("---")
+        # st.info("💡 测试账户：")
+        # st.code("用户名: admin\n密码: admin")
+        # st.code("用户名: user\n密码: user123")
+        
+        with st.expander("🔒 安全提示"):
+            st.markdown("""
+            - 请妥善保管您的登录信息
+            - 不要在公共设备上保存密码
+            - 定期更换密码以确保安全
+            """)
+
+def logout():
+    """用户登出"""
+    for key in list(st.session_state.keys()):
+        if key != 'logged_in' and key != 'username':  # 保留关键状态
+            del st.session_state[key]
+    
+    # 清除登录状态
+    if 'logged_in' in st.session_state:
+        del st.session_state['logged_in']
+    if 'username' in st.session_state:
+        del st.session_state['username']
+    
+    st.rerun()
+
+def show_change_password():
+    """显示修改密码界面"""
+    st.subheader("🔑 修改密码")
+    
+    with st.form("change_password_form"):
+        current_password = st.text_input("当前密码", type="password")
+        new_password = st.text_input("新密码", type="password", help="新密码长度至少为6位")
+        confirm_password = st.text_input("确认新密码", type="password")
+        
+        submitted = st.form_submit_button("修改密码", type="primary")
+        
+        if submitted:
+            username = st.session_state.get('username', '')
+            
+            if not verify_user(username, current_password):
+                st.error("❌ 当前密码错误！")
+            elif new_password != confirm_password:
+                st.error("❌ 新密码与确认密码不匹配！")
+            elif len(new_password) < 6:
+                st.error("❌ 新密码长度至少为6位！")
+            elif current_password == new_password:
+                st.error("❌ 新密码不能与当前密码相同！")
+            else:
+                if update_user_password(username, new_password):
+                    st.success("✅ 密码修改成功！新密码已生效。")
+                    st.info("🔒 为了安全起见，请重新登录。")
+                    time.sleep(2)
+                    logout()
+                else:
+                    st.error("❌ 密码修改失败，请稍后重试！")
+    
+    if st.button("← 取消修改", key="cancel_change_pwd"):
+        st.session_state.show_change_password = False
+        st.rerun()
+
+def show_user_sidebar():
+    """在侧边栏显示用户信息"""
+    with st.sidebar:
+        st.markdown("---")
+        
+        username = st.session_state.get('username', '')
+        user_info = get_user_info(username)
+        
+        if user_info:
+            st.markdown(f"👤 **当前用户:** {username}")
+            st.markdown(f"📅 **角色:** {user_info.get('role', 'user')}")
+            
+            if user_info.get('last_login'):
+                st.markdown(f"🕐 **最后登录:** {user_info['last_login'][:16]}")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            if st.button("🚪 登出", type="secondary", key="logout_btn"):
+                logout()
+        
+        with col2:
+            if st.button("🔑 修改密码", key="change_pwd_btn"):
+                st.session_state.show_change_password = True
 
 # 初始化百度TTS客户端
 @st.cache_resource
@@ -117,7 +250,6 @@ def update_playback_record(audio_file, position=0, duration=0, status="playing")
 # 从URL参数获取当前播放位置
 def get_playback_position_from_url():
     """从当前URL的查询参数中获取播放位置"""
-    # 使用新的 st.query_params API
     query_params = st.query_params
     if 't_live' in query_params:
         try:
@@ -126,7 +258,47 @@ def get_playback_position_from_url():
             pass
     return 0
 
-# 音频播放器界面 - 使用URL参数方案
+# 文本转语音界面
+def show_tts_interface():
+    st.header("📝 文本转语音")
+    
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        txt_files = get_txt_files()
+        if not txt_files:
+            st.warning(f"📁 请在 {config.BOOKS_DIR} 文件夹中添加txt文件")
+            return
+        
+        selected_txt = st.selectbox("选择文本文件", txt_files, key="txt_selector")
+        
+        if selected_txt:
+            content = read_txt_file(selected_txt)
+            if content:
+                st.text_area("文本内容预览", content[:500] + "..." if len(content) > 500 else content, height=200)
+    
+    with col2:
+        voice_name = st.selectbox("选择音色", list(config.VOICE_OPTIONS.keys()), key="voice_selector")
+        voice_type = config.VOICE_OPTIONS[voice_name]
+        
+        if st.button("🎤 生成音频", type="primary"):
+            if selected_txt:
+                with st.spinner("正在生成音频..."):
+                    content = read_txt_file(selected_txt)
+                    if content:
+                        base_name = os.path.splitext(selected_txt)[0]
+                        output_filename = f"{base_name}_{voice_name}.mp3"
+                        
+                        if os.path.exists(os.path.join(config.AUDIO_FILES_DIR, output_filename)):
+                            st.info("⚠️ 该音频文件已存在！")
+                        else:
+                            if generate_audio(content, voice_type, output_filename):
+                                st.success(f"✅ 音频生成成功: {output_filename}")
+                                st.balloons()
+                            else:
+                                st.error("❌ 音频生成失败")
+
+# 音频播放器界面
 def show_player_interface():
     st.header("🎧 音频播放器")
     
@@ -150,7 +322,7 @@ def show_player_interface():
         if selected_audio:
             audio_path = get_audio_path(selected_audio)
             
-            # 获取URL参数中的播放位置 - 使用新的API
+            # 获取URL参数中的播放位置
             current_position = get_playback_position_from_url()
             
             # 获取保存的播放位置
@@ -234,7 +406,7 @@ def show_player_interface():
             
             with col_btn1:
                 if st.button("💾 保存当前位置", key="save_position"):
-                    # 获取最新的播放位置 - 使用新的API
+                    # 获取最新的播放位置
                     latest_position = get_playback_position_from_url()
                     if latest_position > 0:
                         update_playback_record(selected_audio, position=latest_position)
@@ -291,46 +463,6 @@ def show_player_interface():
         
         df = pd.DataFrame(playlist_data)
         st.dataframe(df, use_container_width=True)
-
-# 文本转语音界面
-def show_tts_interface():
-    st.header("📝 文本转语音")
-    
-    col1, col2 = st.columns([2, 1])
-    
-    with col1:
-        txt_files = get_txt_files()
-        if not txt_files:
-            st.warning(f"📁 请在 {config.BOOKS_DIR} 文件夹中添加txt文件")
-            return
-        
-        selected_txt = st.selectbox("选择文本文件", txt_files, key="txt_selector")
-        
-        if selected_txt:
-            content = read_txt_file(selected_txt)
-            if content:
-                st.text_area("文本内容预览", content[:500] + "..." if len(content) > 500 else content, height=200)
-    
-    with col2:
-        voice_name = st.selectbox("选择音色", list(config.VOICE_OPTIONS.keys()), key="voice_selector")
-        voice_type = config.VOICE_OPTIONS[voice_name]
-        
-        if st.button("🎤 生成音频", type="primary"):
-            if selected_txt:
-                with st.spinner("正在生成音频..."):
-                    content = read_txt_file(selected_txt)
-                    if content:
-                        base_name = os.path.splitext(selected_txt)[0]
-                        output_filename = f"{base_name}_{voice_name}.mp3"
-                        
-                        if os.path.exists(os.path.join(config.AUDIO_FILES_DIR, output_filename)):
-                            st.info("⚠️ 该音频文件已存在！")
-                        else:
-                            if generate_audio(content, voice_type, output_filename):
-                                st.success(f"✅ 音频生成成功: {output_filename}")
-                                st.balloons()
-                            else:
-                                st.error("❌ 音频生成失败")
 
 # 播放记录界面
 def show_playback_records():
@@ -416,30 +548,48 @@ def show_playback_records():
 
 # 主界面
 def main():
+    # 检查用户是否已登录
+    if not is_user_logged_in():
+        show_login_page()
+        return
+    
+    # 用户已登录，显示主界面
     st.set_page_config(
         page_title="iRadio Player - 智能音频播放器",
         page_icon="🎵",
         layout="wide"
     )
     
+    # 显示用户信息栏
+    show_user_sidebar()
+    
+    # 处理修改密码界面
+    if st.session_state.get('show_change_password', False):
+        st.subheader("🔑 修改密码")
+        show_change_password()
+        return
+    
     st.title("🎵 iRadio Player - 智能音频播放器")
     st.markdown("---")
     
-    # 侧边栏
+    # 侧边栏功能菜单
     with st.sidebar:
         st.header("📚 功能菜单")
         
+        # 检查API配置
         if config.APP_ID == 'your_app_id' or config.API_KEY == 'your_api_key':
             st.warning("⚠️ 请先配置百度TTS API凭证！")
             st.info("编辑 config.py 文件，填入你的百度AI平台凭证")
             return
         
+        # 功能选择
         feature = st.radio(
             "选择功能",
             ["文本转语音", "音频播放器", "播放记录"],
             key="feature_selector"
         )
     
+    # 主内容区域
     if feature == "文本转语音":
         show_tts_interface()
     elif feature == "音频播放器":
