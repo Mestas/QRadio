@@ -39,7 +39,7 @@ def split_text(text: str, max_bytes: int = 1800) -> list[str]:
 
 # ----------- 2. 仅合成，不落盘 -----------
 # ----------- 新增：仅分段合成 WAV，不合并 -----------
-def generate_segments_mp3(text: str, voice_type: int, base_name: str):
+def generate_segments_mp3(text: str, voice_type: int, base_name: str, voice_name: str):
     """
     每段 ≤1800 字节，输出 mp3（aue=6），不合并
     返回 List[文件名]
@@ -71,7 +71,7 @@ def generate_segments_mp3(text: str, voice_type: int, base_name: str):
             st.error(f"第 {idx} 段不是合法 mp3，前4字节={result[:4]} 长度={len(result)}")
             return False
 
-        fname = f"{base_name}_seg{idx:03d}.mp3"
+        fname = f"{base_name}_{voice_name}_seg{idx:03d}.mp3"
         fpath = os.path.join(config.AUDIO_FILES_DIR, fname)
         with open(fpath, 'wb') as f:
             f.write(result)
@@ -386,7 +386,7 @@ def show_tts_interface():
                 content = read_txt_file(selected_txt)
                 if content:
                     base_name = os.path.splitext(selected_txt)[0]
-                    files = generate_segments_mp3(content, voice_type, base_name)
+                    files = generate_segments_mp3(content, voice_type, base_name, voice_name)
                     if files:
                         st.success(f"✅ 已生成 {len(files)} 段 MP3。")
                         # for f in files:
