@@ -1,19 +1,96 @@
 import streamlit as st
 import os
 import json
-import base64
 import time
 from datetime import datetime
 from aip import AipSpeech
 import config
 import pandas as pd
+import re
 from urllib.parse import urlparse, parse_qs
-import hashlib
-import secrets
 from user_config import (
     init_user_config, verify_user, update_user_password, 
     get_user_info, update_last_login, load_user_config
 )
+
+# ----------- 1. 文本分段（同前） -----------
+def split_text(text: str, max_bytes: int = 1800) -> list[str]:
+    text = text.lstrip('\ufeff').strip()
+    if not text:
+        return []
+    sentences = re.findall(r'[^。！？\.\?\!]*[。！？\.\?\!]?', text, flags=re.S)
+    sentences = [s.strip() for s in sentences if s.strip()]
+    sentences = [s for s in sentences if re.search(r'[\u4e00-\u9fa5a-zA-Z0-9]', s)]
+    if not sentences:
+        return [text] if len(text.encode('utf-8')) <= max_bytes else []
+    chunks, buf, buf_len = [], '', 0
+    for sent in sentences:
+        l = len(sent.encode('utf-8'))
+        if buf_len + l <= max_bytes:
+            buf, buf_len = buf + sent, buf_len + l
+        else:
+            if buf:
+                chunks.append(buf)
+            buf, buf_len = sent, l
+    if buf:
+        chunks.append(buf)
+    return chunks
+
+
+# ----------- 2. 仅合成，不落盘 -----------
+# ----------- 新增：仅分段合成 WAV，不合并 -----------
+def generate_segments_mp3(text: str, voice_type: int, base_name: str):
+    """
+    每段 ≤1800 字节，输出 mp3（aue=6），不合并
+    返回 List[文件名]
+    """
+    client = init_baidu_tts()
+    # 1=wav(带RIFF头)  3/4=裸pcm  6=mp3
+    options = {'spd': 5, 'pit': 5, 'vol': 5, 'per': voice_type, 'aue': 6}
+    chunks = split_text(text, max_bytes=1500)
+    if not chunks:
+        st.error("拆分后没有有效段落！")
+        return []
+    
+    os.makedirs(config.AUDIO_FILES_DIR, exist_ok=True)
+    files = []
+
+    for idx, seg in enumerate(chunks, 1):
+        try:
+            result = client.synthesis(seg, 'zh', 1, options)
+            st.write(f'一共有{len(chunks)}段，第{idx}段的汉字数为{len(seg)}个')
+        except Exception as e:
+            st.error(f"第 {idx} 段网络异常：{e}")
+            return []
+
+        # 硬拦截
+        if isinstance(result, dict):
+            st.error(f"第 {idx} 段合成失败：{result}")
+            return False
+        if len(result) < 100 or not result.startswith(b'RIFF'):
+            st.error(f"第 {idx} 段不是合法 mp3，前4字节={result[:4]} 长度={len(result)}")
+            return False
+
+        fname = f"{base_name}_seg{idx:03d}.mp3"
+        fpath = os.path.join(config.AUDIO_FILES_DIR, fname)
+        with open(fpath, 'wb') as f:
+            f.write(result)
+        files.append(fname)
+    return files
+
+
+# ----------- 3. 保存 & 展示 -----------
+def save_segments(segments, base_name: str):
+    """把每段音频写成独立文件，并返回文件列表"""
+    os.makedirs(config.AUDIO_FILES_DIR, exist_ok=True)
+    files = []
+    for idx, (txt, audio_bytes) in enumerate(segments, 1):
+        fname = f"{base_name}_seg{idx:03d}.mp3"
+        fpath = os.path.join(config.AUDIO_FILES_DIR, fname)
+        with open(fpath, 'wb') as f:
+            f.write(audio_bytes)
+        files.append(fname)
+    return files
 
 # 初始化用户配置
 init_user_config()
@@ -179,7 +256,12 @@ def generate_audio(text, voice_type, output_filename):
     client = init_baidu_tts()
     
     options = {
-        'spd': 5, 'pit': 5, 'vol': 5, 'per': voice_type, 'aue': 6
+    'spd': 5,
+    'pit': 5,
+    'vol': 5,
+    'per': voice_type,
+    'aue': 4,          # 4 = wav（16k 16bit PCM）
+    # 其他可选：3=pcm（裸流），5=amr，6=mp3（默认）
     }
     
     try:
@@ -281,23 +363,40 @@ def show_tts_interface():
         voice_name = st.selectbox("选择音色", list(config.VOICE_OPTIONS.keys()), key="voice_selector")
         voice_type = config.VOICE_OPTIONS[voice_name]
         
-        if st.button("🎤 生成音频", type="primary"):
-            if selected_txt:
-                with st.spinner("正在生成音频..."):
-                    content = read_txt_file(selected_txt)
-                    if content:
-                        base_name = os.path.splitext(selected_txt)[0]
-                        output_filename = f"{base_name}_{voice_name}.mp3"
+        # if st.button("🎤 生成音频", type="primary"):
+        #     if selected_txt:
+        #         with st.spinner("正在生成音频..."):
+        #             content = read_txt_file(selected_txt)
+        #             if content:
+        #                 base_name = os.path.splitext(selected_txt)[0]
+        #                 output_filename = f"{base_name}_{voice_name}.mp3"
                         
-                        if os.path.exists(os.path.join(config.AUDIO_FILES_DIR, output_filename)):
-                            st.info("⚠️ 该音频文件已存在！")
-                        else:
-                            if generate_audio(content, voice_type, output_filename):
-                                st.success(f"✅ 音频生成成功: {output_filename}")
-                                st.balloons()
-                            else:
-                                st.error("❌ 音频生成失败")
-
+        #                 if os.path.exists(os.path.join(config.AUDIO_FILES_DIR, output_filename)):
+        #                     st.info("⚠️ 该音频文件已存在！")
+        #                 else:
+        #                     output_path = os.path.join(config.AUDIO_FILES_DIR, output_filename)
+        #                     if generate_audio(content, voice_type, output_path):
+        #                         st.success(f"✅ 长音频生成成功: {output_filename}")
+        #                         st.balloons()
+        #                     else:
+        #                         st.error("❌ 长音频合成失败，请检查日志")
+        # with col2:
+        if st.button("🎤 分段合成音频", type="primary"):
+            with st.spinner("正在分段合成 MP3..."):
+                content = read_txt_file(selected_txt)
+                if content:
+                    base_name = os.path.splitext(selected_txt)[0]
+                    files = generate_segments_mp3(content, voice_type, base_name)
+                    if files:
+                        st.success(f"✅ 已生成 {len(files)} 段 MP3。")
+                        # for f in files:
+                        #     audio_path = os.path.join(config.AUDIO_FILES_DIR, f)
+                        #     with open(audio_path, 'rb') as af:
+                        #         st.audio(af, format='audio/mp3')
+                        #     st.download_button(label=f"下载 {f}", data=af,
+                        #                     file_name=f, mime='audio/mp3')
+                    else:
+                        st.error("分段合成失败")
 # 音频播放器界面
 def show_player_interface():
     st.header("🎧 音频播放器")
@@ -462,7 +561,7 @@ def show_player_interface():
             })
         
         df = pd.DataFrame(playlist_data)
-        st.dataframe(df, use_container_width=True)
+        st.dataframe(df, width='stretch')
 
 # 播放记录界面
 def show_playback_records():
@@ -510,7 +609,7 @@ def show_playback_records():
     df = pd.DataFrame(records_data)
     df = df.sort_values('最后播放', ascending=False)
     
-    st.dataframe(df, use_container_width=True)
+    st.dataframe(df, width='stretch')
     
     if len(records_data) > 1:
         st.subheader("📈 播放趋势")
