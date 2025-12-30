@@ -2,9 +2,9 @@ import os
 
 # 百度TTS API配置
 # 请替换为你自己的百度AI平台凭证
-APP_ID = '121656623'
-API_KEY = 'RcTDoGnhP4O0ZqQbUiqoI0vS'
-SECRET_KEY = '3693FlQ7HTioa4f1KzogBZDgAFMTFPqc'
+APP_ID = '121662318'
+API_KEY = 'vhwMR88ICte7uoc1n81QJOaD'
+SECRET_KEY = 'AmbV9dA2csBpZLI1Uwz5FsmVnAVDi1Jl'
 
 # 文件夹路径
 BOOKS_DIR = 'Books'
